@@ -18,6 +18,9 @@ NS_ASSUME_NONNULL_BEGIN
 /** password should be UTF-8 and have non-zero length */
 - (nullable instancetype) initWithPath:(NSString*)path password:(NSString*)password;
 
+/** password and salt should be UTF-8 and have non-zero length. salt needed if unencrypted header */
+- (nullable instancetype) initWithPath:(NSString*)path password:(NSString*)password salt:(NSString*)salt; 
+
 /** key should be 32-bytes and have non-zero length */
 - (nullable instancetype) initWithPath:(NSString*)path key:(NSData*)key;
 
@@ -53,6 +56,13 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)setCipherCompatibility:(NSInteger)version;
 
 - (BOOL)vacuum;
+
+//see https://github.com/sqlcipher/sqlcipher/issues/255 (for unencrypted header in shared space)
+typedef void (^IOCipherSaltBlock)(NSData *saltData);
++ (nullable NSError *)convertDatabaseIfNecessary:(NSString *)databaseFilePath
+                                databasePassword:(NSString *)databasePassword
+                                       saltBlock:(IOCipherSaltBlock)saltBlock;
+
 @end
 
 @interface IOCipher (FileManagement)

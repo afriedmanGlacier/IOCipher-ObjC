@@ -37,6 +37,30 @@ static inline NSError* IOCipherPOSIXError(int code) {
     }
     if (self = [super init]) {
         sqlfs_open_password([path UTF8String], [password UTF8String], &_sqlfs);
+
+        _path = path;
+        if (!_sqlfs) {
+            return nil;
+        }
+    }
+    
+    return self;
+}
+
+/** password should be UTF-8 */
+- (instancetype) initWithPath:(NSString*)path password:(NSString*)password salt:(NSString*)salt {
+    NSParameterAssert(path != nil);
+    NSAssert(password.length > 0, @"password should have a non-zero length!");
+    if (password.length == 0) {
+        return nil;
+    }
+    
+    if (self = [super init]) {
+        if (salt != nil) {
+            sqlfs_open_password_unencrypted_header([path UTF8String], [password UTF8String], [salt UTF8String], &_sqlfs);
+        } else {
+            sqlfs_open_password([path UTF8String], [password UTF8String], &_sqlfs);
+        }
         _path = path;
         if (!_sqlfs) {
             return nil;
@@ -355,5 +379,107 @@ static inline NSError* IOCipherPOSIXError(int code) {
     return success;
 }
 
+//see https://github.com/sqlcipher/sqlcipher/issues/255 
+const NSUInteger kSqliteHeaderLength = 32;
+const NSUInteger kSQLCipherSaltLength = 16;
+
++ (nullable NSError *)convertDatabaseIfNecessary:(NSString *)databaseFilePath
+                                databasePassword:(NSString *)databasePassword
+                                       saltBlock:(IOCipherSaltBlock)saltBlock
+{
+    NSParameterAssert(databaseFilePath.length > 0);
+    NSParameterAssert(databasePassword.length > 0);
+    NSParameterAssert(saltBlock);
+    
+    if ([self doesDatabaseNeedToBeConverted:databaseFilePath]) {
+        NSData *saltData;
+        {
+            NSData *headerData = [self readFirstNBytesOfDatabaseFile:databaseFilePath byteCount:kSqliteHeaderLength];
+            NSParameterAssert(headerData);
+
+            NSParameterAssert(headerData.length >= kSQLCipherSaltLength);
+            saltData = [headerData subdataWithRange:NSMakeRange(0, kSQLCipherSaltLength)];
+
+            // Make sure we successfully persist the salt (persumably in the keychain) before
+            // proceeding with the database conversion or we could leave the app in an
+            // unrecoverable state.
+            saltBlock(saltData);
+        }
+        NSString *salt = [NSString stringWithFormat:@"x'%@'", [self hexadecimalStringForData:saltData]];
+        
+        
+        sqlfs_t *sqlfstemp;
+        int result = sqlfs_migrate_to_unencrypted_header([databaseFilePath UTF8String], [databasePassword UTF8String], [salt UTF8String], &sqlfstemp);
+        if (result != SQLITE_OK) {
+            return IOCipherPOSIXError(result);
+        }
+        sqlfs_close(sqlfstemp);
+    }
+    return nil;
+}
+
++ (NSString *)hexadecimalStringForData:(NSData *)data {
+    /* Returns hexadecimal string of NSData. Empty string if data is empty. */
+    const unsigned char *dataBuffer = (const unsigned char *)[data bytes];
+    if (!dataBuffer) {
+        return @"";
+    }
+    
+    NSUInteger dataLength = [data length];
+    NSMutableString *hexString = [NSMutableString stringWithCapacity:(dataLength * 2)];
+    
+    for (NSUInteger i = 0; i < dataLength; ++i) {
+        [hexString appendFormat:@"%02x", dataBuffer[i]];
+    }
+    return [hexString copy];
+}
+
++ (BOOL)doesDatabaseNeedToBeConverted:(NSString *)databaseFilePath
+{
+    NSParameterAssert(databaseFilePath != nil);
+
+    if (![[NSFileManager defaultManager] fileExistsAtPath:databaseFilePath]) {
+        NSLog(@"database file not found.");
+        return nil;
+    }
+
+    NSData *headerData = [self readFirstNBytesOfDatabaseFile:databaseFilePath byteCount:kSqliteHeaderLength];
+    NSParameterAssert(headerData != nil);
+
+    NSString *kUnencryptedHeader = @"SQLite format 3\0";
+    NSData *unencryptedHeaderData = [kUnencryptedHeader dataUsingEncoding:NSUTF8StringEncoding];
+    BOOL isUnencrypted = [unencryptedHeaderData
+        isEqualToData:[headerData subdataWithRange:NSMakeRange(0, unencryptedHeaderData.length)]];
+    if (isUnencrypted) {
+        NSLog(@"doesDatabaseNeedToBeConverted; legacy database header already decrypted.");
+        return NO;
+    }
+
+    return YES;
+}
+
++ (NSData *)readFirstNBytesOfDatabaseFile:(NSString *)filePath byteCount:(NSUInteger)byteCount
+{
+    @autoreleasepool {
+        NSError *error;
+        // Use memory-mapped NSData to avoid reading the entire file into memory.
+        //
+        // We use NSDataReadingMappedAlways instead of NSDataReadingMappedIfSafe because
+        // we know the database will always exist for the duration of this instance of NSData.
+        NSData *_Nullable data = [NSData dataWithContentsOfURL:[NSURL fileURLWithPath:filePath]
+                                                       options:NSDataReadingMappedAlways
+                                                         error:&error];
+        if (!data || error) {
+            NSLog(@"Couldn't read database file header.");
+            [NSException raise:@"Couldn't read database file header" format:@""];
+        }
+        // Pull this constant out so that we can use it in our YapDatabase fork.
+        NSData *_Nullable headerData = [data subdataWithRange:NSMakeRange(0, byteCount)];
+        if (!headerData || headerData.length != byteCount) {
+            [NSException raise:@"Database file header has unexpected length" format:@"Database file header has unexpected length: %zd", headerData.length];
+        }
+        return [headerData copy];
+    }
+}
 
 @end
