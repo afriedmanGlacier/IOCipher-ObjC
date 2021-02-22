@@ -36,6 +36,7 @@ static inline NSError* IOCipherPOSIXError(int code) {
         return nil;
     }
     if (self = [super init]) {
+        [self cleanUpWalFile:path password:password salt:nil];
         sqlfs_open_password([path UTF8String], [password UTF8String], &_sqlfs);
 
         _path = path;
@@ -47,6 +48,23 @@ static inline NSError* IOCipherPOSIXError(int code) {
     return self;
 }
 
+- (void)cleanUpWalFile:(NSString *)path password:(NSString *)password salt:(NSString*)salt {
+    NSError *error = nil;
+    NSString *walPath = [path stringByAppendingString:@"-wal"];
+    NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:walPath error:&error];
+
+    if (error == nil && ((NSNumber *) attributes[NSFileSize]).longLongValue > 1 * 1024 * 1024) {
+        // Quote from the SQLite documentation: "The only safe way to remove a WAL file is to open the database file
+        // using one of the sqlite3_open() interfaces then immediately close the database using sqlite3_close()"
+        if (salt != nil) {
+            sqlfs_open_password_unencrypted_header([path UTF8String], [password UTF8String], [salt UTF8String], &_sqlfs);
+        } else {
+            sqlfs_open_password([path UTF8String], [password UTF8String], &_sqlfs);
+        }
+        sqlfs_close(_sqlfs);
+    }
+}
+
 /** password should be UTF-8 */
 - (instancetype) initWithPath:(NSString*)path password:(NSString*)password salt:(NSString*)salt {
     NSParameterAssert(path != nil);
@@ -56,6 +74,7 @@ static inline NSError* IOCipherPOSIXError(int code) {
     }
     
     if (self = [super init]) {
+        [self cleanUpWalFile:path password:password salt:salt];
         if (salt != nil) {
             sqlfs_open_password_unencrypted_header([path UTF8String], [password UTF8String], [salt UTF8String], &_sqlfs);
         } else {
