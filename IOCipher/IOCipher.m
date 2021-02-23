@@ -53,7 +53,7 @@ static inline NSError* IOCipherPOSIXError(int code) {
     NSString *walPath = [path stringByAppendingString:@"-wal"];
     NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:walPath error:&error];
 
-    if (error == nil && ((NSNumber *) attributes[NSFileSize]).longLongValue > 1 * 1024 * 1024) {
+    if (error == nil && ((NSNumber *) attributes[NSFileSize]).longLongValue > 1 * 1024 * 10) { //1024) {
         // Quote from the SQLite documentation: "The only safe way to remove a WAL file is to open the database file
         // using one of the sqlite3_open() interfaces then immediately close the database using sqlite3_close()"
         if (salt != nil) {
